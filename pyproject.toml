@@ -1,0 +1,27 @@
+[project]
+name = "memory-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "arxiv>=3.0.0",
+    "datasets>=4.8.4",
+    "dotenv>=0.9.9",
+    "jupyterlab>=4.5.6",
+    "langchain>=1.2.15",
+    "langchain-community>=0.4.1",
+    "langchain-openai>=1.2.1",
+    "langchain-oracledb>=1.2.0",
+    "loguru>=0.7.3",
+    "openai>=2.32.0",
+    "oracledb>=3.4.2",
+    "pgvector>=0.4.2",
+    "psycopg2>=2.9.12",
+    "pydantic>=2.13.3",
+    "pydantic-settings>=2.14.0",
+    "pymupdf>=1.27.2.2",
+    "sentence-transformers>=5.4.1",
+    "tavily-python>=0.7.23",
+    "tqdm>=4.67.3",
+]

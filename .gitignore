@@ -1,0 +1,102 @@
+# ======================
+# Python
+# ======================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# virtual env
+.venv/
+venv/
+env/
+
+# ======================
+# Jupyter
+# ======================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ======================
+# uv / pip cache
+# ======================
+.uv/
+uv.lock
+
+# ======================
+# Environment variables
+# ======================
+.env
+.env.*
+!.env.example
+
+# ======================
+# IDE
+# ======================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ======================
+# OS files
+# ======================
+.DS_Store
+Thumbs.db
+
+# ======================
+# Logs
+# ======================
+*.log
+logs/
+log/
+
+# ======================
+# ML / AI artifacts
+# ======================
+models/
+checkpoints/
+*.bin
+*.pt
+*.safetensors
+
+# embeddings / vector cache
+*.faiss
+*.index
+
+# ======================
+# Docker
+# ======================
+docker-compose.override.yml
+
+# ======================
+# Database files (local dev)
+# ======================
+*.sqlite3
+*.db
+
+# ======================
+# Jupyter exports
+# ======================
+*.html
+*.pdf
+
+# ======================
+# Test / coverage
+# ======================
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ======================
+# Cache folders
+# ======================
+.cache/
+.mypy_cache/
+.ruff_cache/
