@@ -11,6 +11,7 @@ from typing import Callable, Optional, Union
 
 import psycopg2
 import psycopg2.extras
+from psycopg2.extras import Json
 
 from loguru import logger
 from pydantic import BaseModel
@@ -84,7 +85,6 @@ def table_exists(conn, table_name):
         """, (table_name,))
         return cur.fetchone()[0]
 
-
 class MemoryManager:
     """
     A simplified memory manager for AI agents using Postgres Vector Database.
@@ -129,7 +129,7 @@ class MemoryManager:
                 (thread_id, role, content, metadata, timestamp)
                 VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
                 RETURNING id
-            """, (thread_id, role, content, "{}",))
+            """, (thread_id, role, content, Json({}),))
 
             record_id = cur.fetchone()[0]
         self.conn.commit()
@@ -149,7 +149,11 @@ class MemoryManager:
 
         if not rows:
             return ""
-        messages = [f"[{ts.strftime('%H:%M:%S')}] [{role}] {content}" for role, content, ts in rows]
+        # Keep newest-N selection but display in chronological order for readability.
+        messages = [
+            f"[{ts.strftime('%H:%M:%S')}] [{role}] {content}"
+            for role, content, ts in reversed(rows)
+        ]
         messages_formatted = "\n".join(messages)
         if not messages_formatted:
             messages_formatted = "(No unsummarized messages found for this thread.)"
@@ -195,20 +199,28 @@ Chronological, unsummarized messages from the current thread. This memory captur
             return None
 
         if isinstance(tool_args, (dict, list)):
-            tool_args_str = json_lib.dumps(tool_args, ensure_ascii=False)
+            tool_args_payload = tool_args
         else:
-            tool_args_str = "" if tool_args is None else str(tool_args)
+            tool_args_payload = {"value": "" if tool_args is None else str(tool_args)}
 
         result_str = "" if result is None else str(result)
-        metadata_str = json_lib.dumps(metadata, ensure_ascii=False) if metadata else "{}"
+        metadata_payload = metadata if isinstance(metadata, dict) else {}
 
         with self.conn.cursor() as cur:
             cur.execute(f"""
                 INSERT INTO {self.tool_log_table}
                 (thread_id, tool_call_id, tool_name, tool_args, result, status, error_message, metadata)
-                VALUES ( %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
             """, (
-                thread_id, tool_call_id, tool_name, tool_args_str, result_str, status, error_message, metadata_str
+                thread_id,
+                tool_call_id,
+                tool_name,
+                Json(tool_args_payload),
+                result_str,
+                status,
+                error_message,
+                Json(metadata_payload),
             ))
             log_id = cur.fetchone()[0]
         self.conn.commit()
@@ -218,21 +230,22 @@ Chronological, unsummarized messages from the current thread. This memory captur
         """Read recent tool logs for a thread, newest first."""
         with self.conn.cursor() as cur:
             cur.execute(f"""
-                SELECT * FROM {self.tool_log_table}
+                SELECT id, tool_call_id, tool_name, tool_args, result, status, error_message, metadata, timestamp
+                FROM {self.tool_log_table}
                 WHERE thread_id = %s
-                ORDER BY executed_at DESC
+                ORDER BY timestamp DESC
                 LIMIT %s
             """, (thread_id, limit))
             rows = cur.fetchall()
 
         logs = []
-        for log_id, tool_call_id, tool_name, tool_args, result_preview, status, error_message, metadata, ts in rows:
+        for log_id, tool_call_id, tool_name, tool_args, result_text, status, error_message, metadata, ts in rows:
             logs.append({
                 "id": log_id,
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name,
                 "tool_args": tool_args,
-                "result_preview": result_preview,
+                "result_preview": result_text,
                 "status": status,
                 "error_message": error_message,
                 "metadata": metadata,
@@ -355,9 +368,14 @@ Past task trajectories that include query context, ordered steps taken, and prio
             properties = {}
             required = []
 
-            for param_name, param_info in stored_params:
+            for param_name, param_info in stored_params.items():
                 # Convert stored param info to OpenAI schema format
-                param_type = param_info.get("type", "string")
+                if isinstance(param_info, dict):
+                    param_type = param_info.get("type", "string")
+                    has_default = "default" in param_info
+                else:
+                    param_type = str(param_info or "string")
+                    has_default = False
                 # Map Python types to JSON schema types
                 type_mapping = {
                     "<class 'str'>": "string",
@@ -373,7 +391,7 @@ Past task trajectories that include query context, ordered steps taken, and prio
                 properties[param_name] = {"type": json_type}
 
                 # If no default, it's required
-                if "default" not in param_info:
+                if not has_default:
                     required.append(param_name)
 
             tools.append({
@@ -389,7 +407,7 @@ Past task trajectories that include query context, ordered steps taken, and prio
 
     def extract_entities(self, text: str, llm_client) -> list[dict]:
         """Use llm to extract entities (people, places, systems) from text."""
-        if not text or len(text.strip() < 5):
+        if not text or len(text.strip()) < 5:
             return []
 
         prompt = f'''Extract entities from "{text[:500]}"
@@ -413,7 +431,7 @@ If none: []'''
             return [{"name": e["name"], "type": e.get("type", "UNKNOWN"), "description": e.get("description", "")}
                     for e in parsed if isinstance(e, dict) and e.get("name")]
 
-        except:
+        except Exception:
             return []
 
 
@@ -427,7 +445,7 @@ If none: []'''
                     [f"{e['name']} ({e['type']}): {e['description']}"],
                     [{"name": e['name'], "type": e['type'], "description": e['description']}]
                 )
-                return entities
+            return entities
         else:
             # store single entity directly
             self.entity_vs.add_texts(
@@ -564,9 +582,9 @@ Compressed snapshots of older conversation windows preserved to retain long-rang
             cur.execute(f"""
                 SELECT id, role, content, timestamp
                 FROM {self.conversation_table}
-                WHERE summary_id = :summary_id
+                WHERE summary_id = %s
                 ORDER BY timestamp ASC
-            """, {"summary_id": summary_id})
+            """, (summary_id,))
             results = cur.fetchall()
 
         if not results:
@@ -584,6 +602,7 @@ Compressed snapshots of older conversation windows preserved to retain long-rang
 
         return "\n".join(lines)
 
+
 class StoreManager:
     """Manages vector stores and SQL tables."""
 
@@ -592,7 +611,11 @@ class StoreManager:
         """Initialize all stores."""
         self.conn = conn
         self.embedding_function = embedding_function
-        self.distance_strategy = distance_strategy
+        if hasattr(distance_strategy, "value"):
+            normalized_distance = str(distance_strategy.value)
+        else:
+            normalized_distance = str(distance_strategy)
+        self.distance_strategy = normalized_distance
         self._conversational_table = conversational_table
         self._tool_log_table = tool_log_table
 
@@ -609,35 +632,35 @@ class StoreManager:
             embedding_function=embedding_function,
             collection_name=table_names['knowledge_base'],
             connection_string=connection_string,
-            distance_strategy=distance_strategy,
+            distance_strategy=normalized_distance,
         )
 
         self._workflow_vs = PGVector(
             embedding_function=embedding_function,
             collection_name=table_names['workflow'],
             connection_string=connection_string,
-            distance_strategy=distance_strategy,
+            distance_strategy=normalized_distance,
         )
 
         self._toolbox_vs = PGVector(
             embedding_function=embedding_function,
             collection_name=table_names['toolbox'],
             connection_string=connection_string,
-            distance_strategy=distance_strategy,
+            distance_strategy=normalized_distance,
         )
 
         self._entity_vs = PGVector(
             embedding_function=embedding_function,
             collection_name=table_names['entity'],
             connection_string=connection_string,
-            distance_strategy=distance_strategy,
+            distance_strategy=normalized_distance,
         )
 
         self._summary_vs = PGVector(
             embedding_function=embedding_function,
             collection_name=table_names['summary'],
             connection_string=connection_string,
-            distance_strategy=distance_strategy,
+            distance_strategy=normalized_distance,
         )
 
     def get_knowledge_base_store(self):
@@ -798,28 +821,52 @@ class Toolbox:
         Extract metadata from a function for storage and retrieval.
         """
         sig = inspect.signature(func)
-        docstring = inspect.getdoc(func) or func.__name__
+
+        # Extract parameter metadata with explicit fields.
+        parameters = {}
+        for name, param in sig.parameters.items():
+            param_info = {"name": name}
+
+            if param.annotation is not inspect.Parameter.empty:
+                param_info["type"] = str(param.annotation)
+            else:
+                param_info["type"] = "string"
+
+            if param.default is not inspect.Parameter.empty:
+                # Store default as string for safe JSON serialization in metadata.
+                param_info["default"] = str(param.default)
+
+            parameters[name] = param_info
+
+        # Extract return type.
+        return_type = "Any"
+        if sig.return_annotation is not inspect.Signature.empty:
+            return_type = str(sig.return_annotation)
+
+        description = inspect.getdoc(func) or "No description"
 
         return ToolMetadata(
             name=func.__name__,
-            description=docstring.split('\n')[0],
+            description=description,
             signature=str(sig),
-            parameters={param.name: str(param.annotation) for param in sig.parameters.values()},
-            return_type=str(sig.return_annotation) if sig.return_annotation else "Any"
+            parameters=parameters,
+            return_type=return_type,
         )
 
     def _tool_exists_in_db(self, tool_name: str) -> bool:
         """Check if a tool with the given name already exists in the toolbox store."""
         try:
-            table = self.memory_manager.toolbox_vs.table_name
-            conn = self.memory_manager.conn
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT COUNT(*) FROM {table} "
-                    f"WHERE JSON_VALUE(metadata, '$.name') = :name",
-                    {"name": tool_name},
-                )
-                return cur.fetchone()[0] > 0
+            # Keep this DB check backend-agnostic by using vector-store metadata filters.
+            results = self.memory_manager.toolbox_vs.similarity_search(
+                query=tool_name,
+                k=1,
+                filter={"name": tool_name},
+            )
+            if not results:
+                return False
+
+            first = results[0]
+            return (first.metadata or {}).get("name") == tool_name
         except Exception:
             return False
 
@@ -837,15 +884,18 @@ class Toolbox:
         def decorator(f: Callable) -> str:
             tool_name = f.__name__
 
+            # In-memory dedupe for current process.
+            if tool_name in self._tools_by_name:
+                logger.info(f"Tool '{tool_name}' already registered in runtime")
+                return tool_name
+
             # Deduplication: skip DB write if tool already stored
             if self._tool_exists_in_db(tool_name):
-                self.tools_by_name[tool_name] = f
+                self._tools_by_name[tool_name] = f
                 logger.info(f"Tool '{tool_name}' already in toolbox (skipping DB write)")
                 return tool_name
 
             docstring = inspect.getdoc(f) or f.__name__
-
-            docstring = f.__name__ or ""
             signature = str(inspect.signature(f))
             object_id = uuid.uuid4()
             object_id_str = str(object_id)
